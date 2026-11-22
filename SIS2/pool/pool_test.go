@@ -70,6 +70,22 @@ func TestNew_InvalidConfig(t *testing.T) {
 	}
 }
 
+func TestNew_Startup(t *testing.T) {
+	s := task.NewStore()
+	p, err := New(s, analyzer.New(), 2, 1)
+	if err != nil || p == nil {
+		t.Fatalf("New(2 workers, cap 1) = %v, %v; want a running pool", p, err)
+	}
+	id := mustCreate(t, s, "started")
+	if err := p.Submit(id); err != nil {
+		t.Fatalf("Submit on fresh pool: %v", err)
+	}
+	p.Shutdown()
+	if st := status(t, s, id); st != task.StatusCompleted {
+		t.Errorf("status = %v, want completed (workers did not run)", st)
+	}
+}
+
 func TestPool_ProcessesConcurrently(t *testing.T) {
 	s := task.NewStore()
 	g := newGate()

@@ -100,7 +100,7 @@ func (s *Store) Process(id string, from Status, p Processor) (*Task, error) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	stored := s.tasks[id] // ponytail: tasks are never deleted, so the entry exists
+	stored := s.tasks[id] // tasks are never deleted, so the entry exists
 	stored.UpdatedAt = time.Now()
 	if procErr != nil {
 		stored.Status = StatusFailed

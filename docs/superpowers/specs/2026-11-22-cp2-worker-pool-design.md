@@ -13,16 +13,16 @@ Considered: blocking Submit (rejected — needs extra unblock-on-shutdown logic)
 **Design.**
 - `task.Store`: `sync.RWMutex` guards map + nextID + task fields. `Get`/`All` return copies (`Task` values),
   never shared pointers. `Transition(id, from, to)` = atomic check-and-set under lock.
-  `Finish(id, result, err)` stores result + Completed/Failed.
+  `Process(id, from, processor)` = from→Processing, analyze without lock, then Completed/Failed (one path for sync + workers).
 - States: `Pending → Queued → Processing → Completed | Failed`. Only Pending may be submitted.
-- `pool.Pool`: `New(store, processor, workers, queueCap)`, `Start()`, `Submit(id)`, `Shutdown()`.
+- `pool.Pool`: `New(store, processor, workers, queueCap)` (starts workers), `Submit(id)`, `Shutdown()`.
   Queue = `chan string` (task IDs), capacity = queueCap. Defaults in main: 3 workers, capacity 10.
 - Submit: under pool mutex: closed? → `ErrPoolClosed`; Pending→Queued; non-blocking send;
   full → revert Queued→Pending, `ErrQueueFull`. Mutex shared with Shutdown ⇒ no send on closed channel.
-- Worker: `for id := range queue` → Queued→Processing (lock), Process (no lock), Finish (lock).
+- Worker: `for id := range queue { store.Process(id, Queued, proc) }`.
 - Shutdown: under mutex set closed + close(queue) once; then `wg.Wait()`. Second call = no-op.
   Queued tasks are drained, not discarded.
-- `service.TaskService.ProcessTask` (sync, CP1) kept, rewritten on top of Transition/Finish.
+- `service.TaskService.ProcessTask` (sync, CP1) kept, = `store.Process(id, Pending, proc)`.
 - Tests: pool startup, submit+results, overlap proof (blocking fake processor waits until 2 in flight),
   duplicate/invalid submit, queue full (state stays Pending), concurrent Get, shutdown drains, submit after shutdown,
   double shutdown. All pass `go test -race`.
