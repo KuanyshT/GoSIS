@@ -1,11 +1,6 @@
 package service
 
-import (
-	"fmt"
-	"time"
-
-	"textanalyzer-cp1/task"
-)
+import "textanalyzer-cp1/task"
 
 type TaskService struct {
 	store     *task.Store
@@ -24,28 +19,9 @@ func (s *TaskService) GetTask(id string) (*task.Task, error) {
 	return s.store.Get(id)
 }
 
+// ProcessTask processes a Pending task synchronously in the caller's
+// goroutine (the Checkpoint 1 path). It shares Store.Process with the
+// worker pool, so a task can only ever be processed once.
 func (s *TaskService) ProcessTask(id string) (*task.Task, error) {
-	t, err := s.store.Get(id)
-	if err != nil {
-		return nil, err
-	}
-
-	if t.Status != task.StatusPending {
-		return nil, fmt.Errorf("%w: task %s is %s, not %s", task.ErrInvalidTransition, t.ID, t.Status, task.StatusPending)
-	}
-
-	t.Status = task.StatusProcessing
-	t.UpdatedAt = time.Now()
-
-	result, procErr := s.processor.Process(t.Input)
-	if procErr != nil {
-		t.Status = task.StatusFailed
-		t.UpdatedAt = time.Now()
-		return t, fmt.Errorf("process task %s: %w", t.ID, procErr)
-	}
-
-	t.Result = result
-	t.Status = task.StatusCompleted
-	t.UpdatedAt = time.Now()
-	return t, nil
+	return s.store.Process(id, task.StatusPending, s.processor)
 }
