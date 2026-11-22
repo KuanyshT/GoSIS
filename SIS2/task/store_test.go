@@ -2,6 +2,7 @@ package task
 
 import (
 	"errors"
+	"sync"
 	"testing"
 )
 
@@ -68,8 +69,8 @@ func TestStore_Get_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get(%q) returned unexpected error: %v", created.ID, err)
 	}
-	if got != created {
-		t.Errorf("Get(%q) returned a different *Task than Create produced", created.ID)
+	if *got != *created {
+		t.Errorf("Get(%q) = %+v, want %+v", created.ID, *got, *created)
 	}
 }
 
@@ -128,5 +129,110 @@ func TestStore_MultipleIndependentTasks(t *testing.T) {
 	}
 	if gotC.Input != "third task text" {
 		t.Errorf("task c.Input = %q, want %q", gotC.Input, "third task text")
+	}
+}
+
+func TestStore_Transition(t *testing.T) {
+	s := NewStore()
+	created, _ := s.Create("text")
+
+	got, err := s.Transition(created.ID, StatusPending, StatusQueued)
+	if err != nil {
+		t.Fatalf("Transition(Pending->Queued) error = %v", err)
+	}
+	if got.Status != StatusQueued {
+		t.Errorf("Status = %v, want %v", got.Status, StatusQueued)
+	}
+
+	if _, err := s.Transition(created.ID, StatusPending, StatusQueued); !errors.Is(err, ErrInvalidTransition) {
+		t.Errorf("second Transition error = %v, want ErrInvalidTransition", err)
+	}
+	if _, err := s.Transition("missing", StatusPending, StatusQueued); !errors.Is(err, ErrTaskNotFound) {
+		t.Errorf("Transition(missing) error = %v, want ErrTaskNotFound", err)
+	}
+}
+
+type upperProc struct{}
+
+type textResult string
+
+func (r textResult) Summary() string { return string(r) }
+
+func (upperProc) Process(in string) (Result, error) { return textResult("done:" + in), nil }
+
+func TestStore_Process_WrongState(t *testing.T) {
+	// A queued task must not be processed through the synchronous
+	// Pending path; otherwise a worker and a direct caller could both
+	// process it.
+	s := NewStore()
+	created, _ := s.Create("text")
+	if _, err := s.Transition(created.ID, StatusPending, StatusQueued); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.Process(created.ID, StatusPending, upperProc{}); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("Process error = %v, want ErrInvalidTransition", err)
+	}
+	got, _ := s.Get(created.ID)
+	if got.Status != StatusQueued || got.Result != nil {
+		t.Errorf("task changed to %v/%v, want queued/nil", got.Status, got.Result)
+	}
+
+	done, err := s.Process(created.ID, StatusQueued, upperProc{})
+	if err != nil {
+		t.Fatalf("Process(from Queued) error = %v", err)
+	}
+	if done.Status != StatusCompleted || done.Result.Summary() != "done:text" {
+		t.Errorf("got %v/%v, want completed/done:text", done.Status, done.Result)
+	}
+}
+
+func TestStore_SnapshotsAreCopies(t *testing.T) {
+	s := NewStore()
+	created, _ := s.Create("text")
+	created.Status = StatusCompleted
+
+	got, _ := s.Get(created.ID)
+	got.Input = "changed"
+
+	again, _ := s.Get(created.ID)
+	if again.Status != StatusPending || again.Input != "text" {
+		t.Errorf("stored task = %v/%q, want pending/\"text\" (callers must get copies)", again.Status, again.Input)
+	}
+}
+
+func TestStore_ConcurrentCreateGet(t *testing.T) {
+	s := NewStore()
+	const n = 100
+	ids := make(chan string, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			created, err := s.Create("text")
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			if _, err := s.Get(created.ID); err != nil {
+				t.Error(err)
+			}
+			_ = s.All()
+			ids <- created.ID
+		}()
+	}
+	wg.Wait()
+	close(ids)
+
+	seen := map[string]bool{}
+	for id := range ids {
+		if seen[id] {
+			t.Fatalf("duplicate ID %q", id)
+		}
+		seen[id] = true
+	}
+	if len(seen) != n || s.Len() != n {
+		t.Errorf("unique IDs = %d, Len = %d, want %d", len(seen), s.Len(), n)
 	}
 }
